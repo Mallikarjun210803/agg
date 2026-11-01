@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JIEF IDT Attendance Percentage Report</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root{--navy:#111827;--blue:#1d4ed8;--bg:#f3f6fb;--line:#e5e7eb;--green:#15803d;--red:#b91c1c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:Arial,sans-serif;color:#172033}
+header{background:var(--navy);color:white;padding:25px 5%;}header h1{margin:0 0 7px;font-size:24px}header p{margin:0;color:#cbd5e1}
+main{max-width:1400px;margin:25px auto;padding:0 18px}
+.panel{background:white;border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px;box-shadow:0 3px 12px #0f172a0a}
+h2{font-size:18px;margin:0 0 14px}
+.uploads{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.upload{border:1px dashed #94a3b8;border-radius:9px;padding:15px;background:#f8fafc}
+.upload label{display:block;font-weight:700;margin-bottom:9px}.upload input{width:100%}
+button{border:0;border-radius:8px;background:var(--blue);color:white;padding:11px 17px;font-weight:700;cursor:pointer;margin:12px 8px 0 0}
+button.secondary{background:#475569}button:disabled{opacity:.55;cursor:wait}
+#message{margin-top:12px;font-size:14px;white-space:pre-wrap}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.metric{background:#f8fafc;border:1px solid var(--line);border-radius:9px;padding:14px}
+.metric small{display:block;color:#64748b;margin-bottom:7px}.metric strong{font-size:25px}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.toolbar input,.toolbar select{padding:9px;border:1px solid #cbd5e1;border-radius:7px;background:white}
+.table-wrap{overflow:auto;max-height:650px;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;min-width:850px;font-size:13px;background:white}
+th{position:sticky;top:0;background:var(--navy);color:white;text-align:left;z-index:1}
+th,td{padding:10px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
+tr:hover td{background:#f8fafc}.good{color:var(--green);font-weight:700}.low{color:var(--red);font-weight:700}
+.note{color:#64748b;font-size:13px;line-height:1.5}
+@media print{body{background:white}header{background:white;color:black;padding:10px 0}header p{color:#333}.panel{box-shadow:none;border:0;padding:8px 0}.upload-panel,.toolbar,.no-print{display:none!important}.table-wrap{max-height:none;overflow:visible}table{font-size:10px;min-width:0}th{position:static;background:#eee;color:#111}}
+</style>
+</head>
+<body>
+<header><h1>JIEF IDT Attendance Percentage Report</h1><p>JCE Innovation & Entrepreneurship Foundation | Jain College of Engineering, Belagavi</p></header>
+<main>
+<section class="panel upload-panel">
+<h2>Upload attendance PDFs</h2>
+<p class="note">Upload the three session reports. You can also upload more or fewer reports. The system matches students using Roll Number and calculates each student's attendance across the uploaded sessions.</p>
+<div class="uploads" id="uploads">
+<div class="upload"><label>Session PDF 1</label><input type="file" accept="application/pdf,.pdf" class="pdf-file"></div>
+<div class="upload"><label>Session PDF 2</label><input type="file" accept="application/pdf,.pdf" class="pdf-file"></div>
+<div class="upload"><label>Session PDF 3</label><input type="file" accept="application/pdf,.pdf" class="pdf-file"></div>
+</div>
+<button id="addFile" class="secondary" type="button">+ Add another PDF</button>
+<button id="process" type="button">Generate Attendance Report</button>
+<div id="message" role="status"></div>
+</section>
+<section id="results" hidden>
+<div class="panel">
+<h2>Overall summary</h2>
+<div class="cards" id="metrics"></div>
+<p class="note" id="sessionInfo"></p>
+</div>
+<div class="panel">
+<h2>Student-wise attendance</h2>
+<div class="toolbar no-print">
+<input id="search" placeholder="Search name or roll number">
+<select id="batchFilter"><option value="">All batches</option></select>
+<select id="statusFilter"><option value="">All attendance levels</option><option value="low">Below 75%</option><option value="good">75% and above</option></select>
+<select id="sortBy"><option value="batch" selected>Batch-wise (ascending)</option><option value="roll">Sort by roll number</option><option value="percentage">Lowest attendance first</option><option value="name">Name A–Z</option></select>
+<button type="button" id="csv" class="secondary">Download Excel-compatible CSV</button>
+<button type="button" id="print" class="secondary">Print / Save as PDF</button>
+</div>
+<div class="table-wrap"><table id="report"><thead><tr>
+<th>#</th><th>Batch</th><th>Roll No.</th><th>Student Name</th><th>Branch</th><th>Division</th><th>Present</th><th>Absent</th><th>Total Sessions</th><th>Attendance %</th><th>Attendance Status</th>
+</tr></thead><tbody></tbody></table></div>
+<p class="note">Attendance % = (Number of sessions marked PRESENT ÷ Number of uploaded session reports in which the student appears) × 100. Students absent from a session are counted as ABSENT. Students missing from a PDF are not silently counted; they are excluded from that student's session denominator and flagged in the message if roster sizes differ.</p>
+</div>
+</section>
+</main>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+let allStudents=[], sessionDates=[];
+const $=id=>document.getElementById(id);
+function norm(s){return (s||'').replace(/\s+/g,' ').trim();}
+function parseRows(text){
+  const lines=text.split(/\n/).map(norm).filter(Boolean);
+  let date=(text.match(/Date:\s*(\d{4}-\d{2}-\d{2})/i)||[])[1]||'Unknown date';
+  const rows=[];
+  for(const line of lines){
+    // The report's rows start with serial number, batch, roll number, then name and metadata.
+    let m=line.match(/^\s*(\d{1,3})\s+(\d{1,2})\s+([A-Z]\d{2,4})\s+(.+?)\s+(EEE|CS|CI|CV|EC|ME|CE)\s+([A-Z]\s*\([^)]+\))\s+(.+?)\s+(PRESENT|ABSENT)\s*$/i);
+    // Recovery for a malformed exported row where the batch number is repeated
+    // in the Roll No. column and the actual USN is prefixed to the student name.
+    if(!m){
+      const shifted=line.match(/^\s*(\d{1,3})\s+(\d{1,2})\s+\d{1,2}\s+([A-Z]\d{2,4})\s+(.+?)\s+(EEE|CS|CI|CV|EC|ME|CE)\s+([A-Z]\s*\([^)]+\))\s+(.+?)\s+(PRESENT|ABSENT)\s*$/i);
+      if(shifted) m=[shifted[0],shifted[1],shifted[2],shifted[3],shifted[4],shifted[5],shifted[6],shifted[7],shifted[8]];
+    }
+    if(!m) continue;
+    rows.push({serial:+m[1],batch:m[2],roll:m[3].toUpperCase(),name:norm(m[4]),branch:m[5].toUpperCase(),division:norm(m[6]),faculty:norm(m[7]),status:m[8].toUpperCase()});
+  }
+  return {date,rows};
+}
+async function readPdf(file){
+  const data=new Uint8Array(await file.arrayBuffer());
+  const pdf=await pdfjsLib.getDocument({data}).promise;
+  let full='';
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p), content=await page.getTextContent();
+    // Reconstruct lines by PDF text item vertical position, preserving table row grouping.
+    const items=content.items.filter(x=>x.str&&x.str.trim()).map(x=>({str:x.str,x:x.transform[4],y:x.transform[5]}));
+    const groups=[];
+    for(const item of items){
+      let g=groups.find(a=>Math.abs(a.y-item.y)<6);
+      if(!g){g={y:item.y,items:[]};groups.push(g)}
+      g.items.push(item);
+    }
+    groups.sort((a,b)=>b.y-a.y);
+    for(const g of groups){
+      g.items.sort((a,b)=>a.x-b.x);
+      full+=g.items.map(x=>x.str).join(' ')+'\n';
+    }
+  }
+  return parseRows(full);
+}
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function render(){
+ const q=$('search').value.toLowerCase(), batch=$('batchFilter').value, level=$('statusFilter').value, sort=$('sortBy').value;
+ let list=allStudents.filter(s=>(!q||(s.name+' '+s.roll).toLowerCase().includes(q))&&(!batch||s.batch===batch)&&(!level||(level==='low'?s.percent<75:s.percent>=75)));
+ list.sort(sort==='percentage'?(a,b)=>a.percent-b.percent:sort==='name'?(a,b)=>a.name.localeCompare(b.name):sort==='roll'?(a,b)=>a.roll.localeCompare(b.roll,undefined,{numeric:true}):(a,b)=>(+a.batch)-(+b.batch)||a.roll.localeCompare(b.roll,undefined,{numeric:true}));
+ $('report').querySelector('tbody').innerHTML=list.map((s,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(s.batch)}</td><td>${escapeHtml(s.roll)}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.branch)}</td><td>${escapeHtml(s.division)}</td><td>${s.present}</td><td>${s.absent}</td><td>${s.total}</td><td class="${s.percent<75?'low':'good'}">${s.percent.toFixed(1)}%</td><td class="${s.percent<75?'low':'good'}">${s.percent<75?'Below 75%':'75% and above'}</td></tr>`).join('');
+}
+$('process').onclick=async()=>{
+ const files=[...document.querySelectorAll('.pdf-file')].map(x=>x.files[0]).filter(Boolean);
+ if(!files.length){$('message').textContent='Please select at least one PDF.';return;}
+ $('process').disabled=true;$('message').textContent='Reading PDFs and calculating attendance…';
+ try{
+  const sessions=[];
+  for(const f of files){
+    const result=await readPdf(f);
+    if(!result.rows.length)throw new Error(`Could not find student rows in "${f.name}". Please use the JIEF IDT Attendance Report PDF format.`);
+    const seen=new Set(), duplicates=[];
+    for(const row of result.rows){if(seen.has(row.roll))duplicates.push(row.roll);seen.add(row.roll);}
+    if(duplicates.length)throw new Error(`Duplicate Roll Number(s) detected in "${f.name}" (${result.date}): ${[...new Set(duplicates)].join(', ')}. Please check this PDF.`);
+    sessions.push({...result,file:f.name});
+  }
+  // Every uploaded report must contain exactly the same student roster.
+  // The number of students may vary between batches/cohorts; compare Roll Numbers, not a fixed total.
+  const reference=sessions[0];
+  const referenceRolls=new Set(reference.rows.map(r=>r.roll));
+  const mismatches=[];
+  for(let i=1;i<sessions.length;i++){
+    const currentRolls=new Set(sessions[i].rows.map(r=>r.roll));
+    const missingFrom=[...referenceRolls].filter(roll=>!currentRolls.has(roll)).sort();
+    const extraIn=[...currentRolls].filter(roll=>!referenceRolls.has(roll)).sort();
+    if(missingFrom.length||extraIn.length){
+      mismatches.push(`${sessions[i].file} (${sessions[i].date}): ${currentRolls.size} students; missing Roll No(s): ${missingFrom.length?missingFrom.join(', '):'None'}; additional Roll No(s): ${extraIn.length?extraIn.join(', '):'None'}`);
+    }
+  }
+  if(mismatches.length){
+    throw new Error(`STUDENT LIST MISMATCH — Attendance report was not generated.\n\nReference report: ${reference.file} (${reference.date}) — ${referenceRolls.size} students.\n\n${mismatches.join('\n\n')}\n\nPlease upload reports containing the same Roll Numbers in every session.`);
+  }
+  const map=new Map(), missing=[];
+  sessions.forEach((session,idx)=>{
+    for(const r of session.rows){
+      if(!map.has(r.roll))map.set(r.roll,{...r,present:0,absent:0,total:0,seen:new Set()});
+      const s=map.get(r.roll);
+      if(s.seen.has(idx))continue;
+      s.seen.add(idx);s.total++;if(r.status==='PRESENT')s.present++;else s.absent++;
+      // Keep the latest non-empty roster details.
+      s.name=r.name||s.name;s.batch=r.batch||s.batch;s.branch=r.branch||s.branch;s.division=r.division||s.division;
+    }
+  });
+  const max=sessions.length;
+  for(const s of map.values()){s.percent=s.total?100*s.present/s.total:0;if(s.total!==max)missing.push(`${s.roll} (${s.total}/${max} reports)`);delete s.seen;}
+  allStudents=[...map.values()];sessionDates=sessions.map(s=>s.date);
+  const present=allStudents.reduce((n,s)=>n+s.present,0), total=allStudents.reduce((n,s)=>n+s.total,0);
+  const overall=total?100*present/total:0;
+  $('metrics').innerHTML=[
+   ['Students',allStudents.length],['Sessions uploaded',sessions.length],['Total student-session entries',total],['Present entries',present],['Absent entries',total-present],['Overall attendance',overall.toFixed(1)+'%']
+  ].map(([a,b])=>`<div class="metric"><small>${a}</small><strong>${b}</strong></div>`).join('');
+  $('sessionInfo').textContent='Reports processed: '+sessions.map(s=>s.date+' ('+s.rows.length+' students)').join(' • ')+' | All reports have matching Roll Number lists.';
+  const batches=[...new Set(allStudents.map(s=>s.batch))].sort((a,b)=>+a-+b);
+  $('batchFilter').innerHTML='<option value="">All batches</option>'+batches.map(b=>`<option value="${escapeHtml(b)}">Batch ${escapeHtml(b)}</option>`).join('');
+  $('results').hidden=false;render();$('message').textContent=`Successfully processed ${sessions.length} PDF(s). ${allStudents.length} unique students found.`;
+  $('results').scrollIntoView({behavior:'smooth'});
+ }catch(e){$('message').textContent='Error: '+e.message+'\nPlease check that the PDF is a text-based JIEF IDT attendance report.';}
+ finally{$('process').disabled=false;}
+};
+$('addFile').onclick=()=>{const n=document.querySelectorAll('.pdf-file').length+1;const d=document.createElement('div');d.className='upload';d.innerHTML=`<label>Session PDF ${n}</label><input type="file" accept="application/pdf,.pdf" class="pdf-file">`; $('uploads').appendChild(d);};
+['search','batchFilter','statusFilter','sortBy'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',render));
+$('print').onclick=()=>window.print();
+$('csv').onclick=()=>{
+ const headers=['Batch','Roll No.','Student Name','Branch','Division','Present','Absent','Total Sessions','Attendance %','Attendance Status'];
+ const rows=allStudents.map(s=>[s.batch,s.roll,s.name,s.branch,s.division,s.present,s.absent,s.total,s.percent.toFixed(1)+'%',s.percent<75?'Below 75%':'75% and above']);
+ const csv=[headers,...rows].map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');
+ const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='JIEF_IDT_Attendance_Percentage_Report.csv';a.click();URL.revokeObjectURL(url);
+};
+</script>
+</body>
+</html>
